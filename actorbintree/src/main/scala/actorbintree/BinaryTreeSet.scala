@@ -92,7 +92,7 @@ object BinaryTreeNode {
   def props(elem: Int, initiallyRemoved: Boolean) = Props(classOf[BinaryTreeNode], elem, initiallyRemoved)
 }
 
-class BinaryTreeNode(val elem: Int, initiallyRemoved: Boolean) extends Actor with ActorLogging {
+class BinaryTreeNode(val elem: Int, initiallyRemoved: Boolean) extends Actor {
   import BinaryTreeNode._
   import BinaryTreeSet._
 
@@ -126,18 +126,10 @@ class BinaryTreeNode(val elem: Int, initiallyRemoved: Boolean) extends Actor wit
       }
     case Contains(requester, id, elemToFind) =>
       elemToFind match {
-        case _ if elemToFind == elem && !removed                    =>
-          log.debug("node {} - element {} found!", elem, elemToFind)
-          requester ! ContainsResult(id, result = true)
-        case _ if elemToFind < elem && subtrees.get(Left).nonEmpty  =>
-          log.debug("node {} - search element {} in the left subtree", elem, elemToFind)
-          subtrees(Left) ! Contains(requester, id , elemToFind)
-        case _ if elemToFind > elem && subtrees.get(Right).nonEmpty =>
-          log.debug("node {} - search element {} in the right subtree", elem, elemToFind)
-          subtrees(Right) ! Contains(requester, id , elemToFind)
-        case _                                                      =>
-          log.debug("node {} - no subtree, stop the research of {}", elem, elemToFind)
-          requester ! ContainsResult(id, result = false)
+        case _ if elemToFind == elem && !removed                    => requester ! ContainsResult(id, result = true)
+        case _ if elemToFind < elem && subtrees.get(Left).nonEmpty  => subtrees(Left) ! Contains(requester, id , elemToFind)
+        case _ if elemToFind > elem && subtrees.get(Right).nonEmpty => subtrees(Right) ! Contains(requester, id , elemToFind)
+        case _                                                      => requester ! ContainsResult(id, result = false)
       }
   }
 
