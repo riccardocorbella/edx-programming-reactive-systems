@@ -56,17 +56,20 @@ class BinaryTreeSet extends Actor {
 
   def createRoot: ActorRef = context.actorOf(BinaryTreeNode.props(0, initiallyRemoved = true))
 
-  var root = createRoot
+  var root: ActorRef = createRoot
 
   // optional
-  var pendingQueue = Queue.empty[Operation]
+  var pendingQueue: Queue[Operation] = Queue.empty[Operation]
 
   // optional
-  def receive = normal
+  def receive: Receive = normal
 
   // optional
   /** Accepts `Operation` and `GC` messages. */
-  val normal: Receive = { case _ => ??? }
+  val normal: Receive = {
+    case operation: Operation => root ! operation
+//    case GC                   => context.become(garbageCollecting(???))
+  }
 
   // optional
   /** Handles messages while garbage collection is performed.
@@ -86,22 +89,60 @@ object BinaryTreeNode {
   case class CopyTo(treeNode: ActorRef)
   case object CopyFinished
 
-  def props(elem: Int, initiallyRemoved: Boolean) = Props(classOf[BinaryTreeNode],  elem, initiallyRemoved)
+  def props(elem: Int, initiallyRemoved: Boolean) = Props(classOf[BinaryTreeNode], elem, initiallyRemoved)
 }
 
-class BinaryTreeNode(val elem: Int, initiallyRemoved: Boolean) extends Actor {
+class BinaryTreeNode(val elem: Int, initiallyRemoved: Boolean) extends Actor with ActorLogging {
   import BinaryTreeNode._
   import BinaryTreeSet._
 
-  var subtrees = Map[Position, ActorRef]()
-  var removed = initiallyRemoved
+  var subtrees: Map[Position, ActorRef] = Map[Position, ActorRef]()
+  var removed: Boolean = initiallyRemoved
 
   // optional
-  def receive = normal
+  def receive: Receive = normal
 
   // optional
   /** Handles `Operation` messages and `CopyTo` requests. */
-  val normal: Receive = { case _ => ??? }
+  val normal: Receive = {
+    case Insert(requester, id, newElem) =>
+      newElem match {
+        case _ if newElem == elem                                 => removed = false
+                                                                     requester ! OperationFinished(id)
+        case _ if newElem < elem && subtrees.get(Left).nonEmpty   => subtrees(Left) ! Insert(requester, id , newElem)
+        case _ if newElem > elem && subtrees.get(Right).nonEmpty  => subtrees(Right) ! Insert(requester, id , newElem)
+        case _ if newElem < elem && subtrees.get(Left).isEmpty    => subtrees += Left -> createNewNode(newElem)
+                                                                     requester ! OperationFinished(id)
+        case _ if newElem > elem && subtrees.get(Right).isEmpty   => subtrees += Right -> createNewNode(newElem)
+                                                                     requester ! OperationFinished(id)
+      }
+    case Remove(requester, id, elemToDrop) =>
+      elemToDrop match {
+        case _ if elemToDrop == elem                                => removed = true
+                                                                       requester ! OperationFinished(id)
+        case _ if elemToDrop < elem && subtrees.get(Left).nonEmpty  => subtrees(Left) ! Remove(requester, id , elemToDrop)
+        case _ if elemToDrop > elem && subtrees.get(Right).nonEmpty => subtrees(Right) ! Remove(requester, id , elemToDrop)
+        case _                                                      => requester ! OperationFinished(id)
+      }
+    case Contains(requester, id, elemToFind) =>
+      elemToFind match {
+        case _ if elemToFind == elem && !removed                    =>
+          log.debug("node {} - element {} found!", elem, elemToFind)
+          requester ! ContainsResult(id, result = true)
+        case _ if elemToFind < elem && subtrees.get(Left).nonEmpty  =>
+          log.debug("node {} - search element {} in the left subtree", elem, elemToFind)
+          subtrees(Left) ! Contains(requester, id , elemToFind)
+        case _ if elemToFind > elem && subtrees.get(Right).nonEmpty =>
+          log.debug("node {} - search element {} in the right subtree", elem, elemToFind)
+          subtrees(Right) ! Contains(requester, id , elemToFind)
+        case _                                                      =>
+          log.debug("node {} - no subtree, stop the research of {}", elem, elemToFind)
+          requester ! ContainsResult(id, result = false)
+      }
+  }
+
+  def createNewNode(elem: Int): ActorRef =
+    context.actorOf(BinaryTreeNode.props(elem, initiallyRemoved = false))
 
   // optional
   /** `expected` is the set of ActorRefs whose replies we are waiting for,
