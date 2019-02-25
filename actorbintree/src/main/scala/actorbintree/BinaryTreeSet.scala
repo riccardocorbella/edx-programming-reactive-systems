@@ -53,8 +53,10 @@ class BinaryTreeSet extends Actor with ActorLogging {
   import BinaryTreeSet._
   import BinaryTreeNode._
 
+  var id: BigInt = 0
+
   def createRoot: ActorRef =
-    context.actorOf(BinaryTreeNode.props(0, initiallyRemoved = true))
+    context.actorOf(BinaryTreeNode.props(0, initiallyRemoved = true), s"root-$id")
 
   var root: ActorRef = createRoot
 
@@ -69,7 +71,8 @@ class BinaryTreeSet extends Actor with ActorLogging {
   val normal: Receive = {
     case msg: Operation => root ! msg
     case _: GC.type =>
-      log.debug("start garbage collection")
+      log.debug("start gc")
+      id += 1
       val newRoot = createRoot
       root ! CopyTo(newRoot)
       context.become(garbageCollecting(newRoot))
@@ -82,10 +85,15 @@ class BinaryTreeSet extends Actor with ActorLogging {
     */
   def garbageCollecting(newRoot: ActorRef): Receive = {
     case _: GC.type     => ()
-    case msg: Operation => pendingQueue :+= msg
+    case msg: Operation =>
+      log.debug("buffer request {}", msg.id)
+      pendingQueue :+= msg
     case _: CopyFinished.type =>
+//      log.debug("gc finished")
+//      log.debug("pending requests: {}", pendingQueue)
       root = newRoot
       for (op <- pendingQueue) self ! op
+      pendingQueue = Queue.empty[Operation]
       context.become(normal)
   }
 }
@@ -124,16 +132,19 @@ class BinaryTreeNode(val elem: Int, initiallyRemoved: Boolean)
         case _ if newElem == elem =>
           removed = false
           requester ! OperationFinished(id)
-        case _ if newElem < elem && subtrees.get(Left).nonEmpty =>
-          subtrees(Left) ! Insert(requester, id, newElem)
-        case _ if newElem > elem && subtrees.get(Right).nonEmpty =>
-          subtrees(Right) ! Insert(requester, id, newElem)
+          log.debug("completed request {}, send response {} to {}", id, OperationFinished(id), requester)
         case _ if newElem < elem && subtrees.get(Left).isEmpty =>
           subtrees += Left -> createNewNode(newElem)
           requester ! OperationFinished(id)
+          log.debug("completed request {}, send response {} to {}", id, OperationFinished(id), requester)
+        case _ if newElem < elem && subtrees.get(Left).nonEmpty =>
+          subtrees(Left) ! Insert(requester, id, newElem)
         case _ if newElem > elem && subtrees.get(Right).isEmpty =>
           subtrees += Right -> createNewNode(newElem)
           requester ! OperationFinished(id)
+          log.debug("completed request {}, send response {} to {}", id, OperationFinished(id), requester)
+        case _ if newElem > elem && subtrees.get(Right).nonEmpty =>
+          subtrees(Right) ! Insert(requester, id, newElem)
       }
 
     case Remove(requester, id, elemToDrop) =>
@@ -167,7 +178,7 @@ class BinaryTreeNode(val elem: Int, initiallyRemoved: Boolean)
       }
 
     case CopyTo(newRoot) =>
-      log.debug("request to copy {} in {} from {}", elem, newRoot, sender)
+//      log.debug("request to copy {} in {} from {}", elem, newRoot, sender)
       if (removed && context.children.isEmpty) {
         context.parent ! CopyFinished
         self ! PoisonPill
@@ -187,7 +198,7 @@ class BinaryTreeNode(val elem: Int, initiallyRemoved: Boolean)
     */
   def copying(expected: Set[ActorRef], insertConfirmed: Boolean): Receive = {
     case OperationFinished(_) =>
-      log.debug("completed copy of {} in {}", elem, sender)
+//      log.debug("completed copy of {} in {}", elem, sender)
       if (expected.isEmpty) {
         context.parent ! CopyFinished
         self ! PoisonPill
