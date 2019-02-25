@@ -1,6 +1,6 @@
 /**
- * Copyright (C) 2009-2013 Typesafe Inc. <http://www.typesafe.com>
- */
+  * Copyright (C) 2009-2013 Typesafe Inc. <http://www.typesafe.com>
+  */
 package actorbintree
 
 import akka.actor._
@@ -43,18 +43,18 @@ object BinaryTreeSet {
     * `result` is true if and only if the element is present in the tree.
     */
   case class ContainsResult(id: Int, result: Boolean) extends OperationReply
-  
+
   /** Message to signal successful completion of an insert or remove operation. */
   case class OperationFinished(id: Int) extends OperationReply
 
 }
 
-
-class BinaryTreeSet extends Actor {
+class BinaryTreeSet extends Actor with ActorLogging {
   import BinaryTreeSet._
   import BinaryTreeNode._
 
-  def createRoot: ActorRef = context.actorOf(BinaryTreeNode.props(0, initiallyRemoved = true))
+  def createRoot: ActorRef =
+    context.actorOf(BinaryTreeNode.props(0, initiallyRemoved = true))
 
   var root: ActorRef = createRoot
 
@@ -68,9 +68,11 @@ class BinaryTreeSet extends Actor {
   /** Accepts `Operation` and `GC` messages. */
   val normal: Receive = {
     case msg: Operation => root ! msg
-    case _: GC.type     => val newRoot = createRoot
-                           root ! CopyTo(newRoot)
-                           context.become(garbageCollecting(newRoot))
+    case _: GC.type =>
+      log.debug("start garbage collection")
+      val newRoot = createRoot
+      root ! CopyTo(newRoot)
+      context.become(garbageCollecting(newRoot))
   }
 
   // optional
@@ -79,11 +81,12 @@ class BinaryTreeSet extends Actor {
     * all non-removed elements into.
     */
   def garbageCollecting(newRoot: ActorRef): Receive = {
-    case _: GC.type           => ()
-    case msg: Operation       => pendingQueue :+= msg
-    case _: CopyFinished.type => root = newRoot
-                                 for (op <- pendingQueue) self ! op
-                                 context.become(normal)
+    case _: GC.type     => ()
+    case msg: Operation => pendingQueue :+= msg
+    case _: CopyFinished.type =>
+      root = newRoot
+      for (op <- pendingQueue) self ! op
+      context.become(normal)
   }
 }
 
@@ -96,10 +99,13 @@ object BinaryTreeNode {
   case class CopyTo(treeNode: ActorRef)
   case object CopyFinished
 
-  def props(elem: Int, initiallyRemoved: Boolean) = Props(classOf[BinaryTreeNode], elem, initiallyRemoved)
+  def props(elem: Int, initiallyRemoved: Boolean) =
+    Props(classOf[BinaryTreeNode], elem, initiallyRemoved)
 }
 
-class BinaryTreeNode(val elem: Int, initiallyRemoved: Boolean) extends Actor {
+class BinaryTreeNode(val elem: Int, initiallyRemoved: Boolean)
+    extends Actor
+    with ActorLogging {
   import BinaryTreeNode._
   import BinaryTreeSet._
 
@@ -113,48 +119,67 @@ class BinaryTreeNode(val elem: Int, initiallyRemoved: Boolean) extends Actor {
   /** Handles `Operation` messages and `CopyTo` requests. */
   val normal: Receive = {
     case Insert(requester, id, newElem) =>
+      log.debug("request {} to insert {} from {}", id, newElem, requester)
       newElem match {
-        case _ if newElem == elem                                => removed = false
-                                                                    requester ! OperationFinished(id)
-        case _ if newElem < elem && subtrees.get(Left).nonEmpty  => subtrees(Left) ! Insert(requester, id , newElem)
-        case _ if newElem > elem && subtrees.get(Right).nonEmpty => subtrees(Right) ! Insert(requester, id , newElem)
-        case _ if newElem < elem && subtrees.get(Left).isEmpty   => subtrees += Left -> createNewNode(newElem)
-                                                                    requester ! OperationFinished(id)
-        case _ if newElem > elem && subtrees.get(Right).isEmpty  => subtrees += Right -> createNewNode(newElem)
-                                                                    requester ! OperationFinished(id)
+        case _ if newElem == elem =>
+          removed = false
+          requester ! OperationFinished(id)
+        case _ if newElem < elem && subtrees.get(Left).nonEmpty =>
+          subtrees(Left) ! Insert(requester, id, newElem)
+        case _ if newElem > elem && subtrees.get(Right).nonEmpty =>
+          subtrees(Right) ! Insert(requester, id, newElem)
+        case _ if newElem < elem && subtrees.get(Left).isEmpty =>
+          subtrees += Left -> createNewNode(newElem)
+          requester ! OperationFinished(id)
+        case _ if newElem > elem && subtrees.get(Right).isEmpty =>
+          subtrees += Right -> createNewNode(newElem)
+          requester ! OperationFinished(id)
       }
 
     case Remove(requester, id, elemToDrop) =>
+      log.debug("request {} to remove {} from {}", id, elemToDrop, requester)
       elemToDrop match {
-        case _ if elemToDrop == elem                                => removed = true
-                                                                       requester ! OperationFinished(id)
-        case _ if elemToDrop < elem && subtrees.get(Left).nonEmpty  => subtrees(Left) ! Remove(requester, id , elemToDrop)
-        case _ if elemToDrop > elem && subtrees.get(Right).nonEmpty => subtrees(Right) ! Remove(requester, id , elemToDrop)
-        case _                                                      => requester ! OperationFinished(id)
+        case _ if elemToDrop == elem =>
+          removed = true
+          requester ! OperationFinished(id)
+        case _ if elemToDrop < elem && subtrees.get(Left).nonEmpty =>
+          subtrees(Left) ! Remove(requester, id, elemToDrop)
+        case _ if elemToDrop > elem && subtrees.get(Right).nonEmpty =>
+          subtrees(Right) ! Remove(requester, id, elemToDrop)
+        case _ => requester ! OperationFinished(id)
       }
 
     case Contains(requester, id, elemToFind) =>
+      log.debug("request {} to check if {} is available from {}",
+                id,
+                elemToFind,
+                requester)
       elemToFind match {
-        case _ if elemToFind == elem && !removed                    => requester ! ContainsResult(id, result = true)
-        case _ if elemToFind == elem && removed                     => requester ! ContainsResult(id, result = false)
-        case _ if elemToFind < elem && subtrees.get(Left).nonEmpty  => subtrees(Left) ! Contains(requester, id , elemToFind)
-        case _ if elemToFind > elem && subtrees.get(Right).nonEmpty => subtrees(Right) ! Contains(requester, id , elemToFind)
-        case _                                                      => requester ! ContainsResult(id, result = false)
+        case _ if elemToFind == elem && !removed =>
+          requester ! ContainsResult(id, result = true)
+        case _ if elemToFind == elem && removed =>
+          requester ! ContainsResult(id, result = false)
+        case _ if elemToFind < elem && subtrees.get(Left).nonEmpty =>
+          subtrees(Left) ! Contains(requester, id, elemToFind)
+        case _ if elemToFind > elem && subtrees.get(Right).nonEmpty =>
+          subtrees(Right) ! Contains(requester, id, elemToFind)
+        case _ => requester ! ContainsResult(id, result = false)
       }
 
     case CopyTo(newRoot) =>
+      log.debug("request to copy {} in {} from {}", elem, newRoot, sender)
       if (removed && context.children.isEmpty) {
         context.parent ! CopyFinished
         self ! PoisonPill
       } else {
-        if (!removed) newRoot ! Insert(self, elem, elem)
+        if (!removed) newRoot ! Insert(self, -elem, elem)
         for (child <- context.children) child ! CopyTo(newRoot)
         context.become(copying(context.children.toSet, removed))
       }
   }
 
   def createNewNode(elem: Int): ActorRef =
-    context.actorOf(BinaryTreeNode.props(elem, initiallyRemoved = false))
+    context.actorOf(BinaryTreeNode.props(elem, initiallyRemoved = false), s"node-$elem")
 
   // optional
   /** `expected` is the set of ActorRefs whose replies we are waiting for,
@@ -162,6 +187,7 @@ class BinaryTreeNode(val elem: Int, initiallyRemoved: Boolean) extends Actor {
     */
   def copying(expected: Set[ActorRef], insertConfirmed: Boolean): Receive = {
     case OperationFinished(_) =>
+      log.debug("completed copy of {} in {}", elem, sender)
       if (expected.isEmpty) {
         context.parent ! CopyFinished
         self ! PoisonPill
@@ -171,10 +197,13 @@ class BinaryTreeNode(val elem: Int, initiallyRemoved: Boolean) extends Actor {
 
     case _: CopyFinished.type =>
       ((expected - sender).isEmpty, insertConfirmed) match {
-        case (true, true)  => context.parent ! CopyFinished
-                              self ! PoisonPill
-        case (true, false) => context.become(copying(Set.empty, insertConfirmed))
-        case (false, _)    => context.become(copying(expected - sender, insertConfirmed))
+        case (true, true) =>
+          context.parent ! CopyFinished
+          self ! PoisonPill
+        case (true, false) =>
+          context.become(copying(Set.empty, insertConfirmed))
+        case (false, _) =>
+          context.become(copying(expected - sender, insertConfirmed))
       }
   }
 }
