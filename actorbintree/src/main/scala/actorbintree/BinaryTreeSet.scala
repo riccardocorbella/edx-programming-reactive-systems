@@ -92,7 +92,7 @@ class BinaryTreeSet extends Actor with ActorLogging {
 //      log.debug("gc finished")
 //      log.debug("pending requests: {}", pendingQueue)
       root = newRoot
-      for (op <- pendingQueue) self ! op
+      for (op <- pendingQueue) root ! op
       pendingQueue = Queue.empty[Operation]
       context.become(normal)
   }
