@@ -54,7 +54,7 @@ class BinaryTreeSuite(_system: ActorSystem) extends TestKit(_system) with FunSui
     // the grader also verifies that enough actors are created
   }
 
-  /*test("proper inserts and lookups") {
+  test("proper inserts and lookups") {
     val topNode = system.actorOf(Props[BinaryTreeSet])
 
     topNode ! Contains(testActor, id = 1, 1)
@@ -66,9 +66,9 @@ class BinaryTreeSuite(_system: ActorSystem) extends TestKit(_system) with FunSui
     expectMsg(OperationFinished(2))
     expectMsg(ContainsResult(3, true))
     ()
-  }*/
+  }
 
-  /*test("instruction example") {
+  test("instruction example") {
     val requester = TestProbe()
     val requesterRef = requester.ref
     val ops = List(
@@ -90,29 +90,7 @@ class BinaryTreeSuite(_system: ActorSystem) extends TestKit(_system) with FunSui
       )
 
     verify(requester, ops, expectedReplies)
-  }*/
-
-  /*test("my tmp test") {
-    val requester = TestProbe()
-    val requesterRef = requester.ref
-
-    val ops = List(
-      Insert(requesterRef, id = 0, elem = 100),
-      Insert(requesterRef, id = 1, elem = 101))
-
-    val replies = List(
-      OperationFinished(id = 0),
-      OperationFinished(id = 1),
-      OperationFinished(id = 2))
-
-    val topNode = system.actorOf(Props[BinaryTreeSet])
-    for (x <- ops) topNode ! x
-
-    topNode ! GC
-    topNode ! Insert(requesterRef, id = 2, elem = 102)
-
-    receiveN(requester, ops :+ Insert(requesterRef, id = 2, elem = 102), replies)
-  }*/
+  }
 
   test("behave identically to built-in set (includes GC)") {
     val rnd = new Random()
@@ -155,8 +133,6 @@ class BinaryTreeSuite(_system: ActorSystem) extends TestKit(_system) with FunSui
       topNode ! op
       if (rnd.nextDouble() < 0.1) topNode ! GC
     }
-
-//    print(ops.zip(expectedReplies).mkString("\n"))
 
     receiveN(requester, ops, expectedReplies)
   }
