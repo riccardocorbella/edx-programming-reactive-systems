@@ -46,22 +46,25 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props)
 
   //TODO manage failure of persistence service (customize supervision strategy)
 
-  var kv = Map.empty[String, String]
+  var kv = Map.empty[String, (String, Long)]
   // a map from secondary replicas to replicators
   var secondaries = Map.empty[ActorRef, ActorRef]
   // the current set of replicators
   var replicators = Set.empty[ActorRef]
   // a map from operation id to key, requester and missing acks
-  var replicationAcks = Map.empty[Long, (String, ActorRef, Int)]
+  var replicationAcks = Map.empty[Long, (String, Option[ActorRef], Int)]
   // a map from seq to requester
   var persistenceAcks = Map.empty[Long, ActorRef]
+  // a map from key to the last operation
+  //var lastOperation = Map.empty[String, Long]
 
   val firstSeqNum = 0
 
-  def replicate(op: Operation,
-                replicators: Set[ActorRef],
-                currentReplicationAcks: Map[Long, (String, ActorRef, Int)])
-    : Map[Long, (String, ActorRef, Int)] = {
+  def replicate(
+      op: Operation,
+      replicators: Set[ActorRef],
+      currentReplicationAcks: Map[Long, (String, Option[ActorRef], Int)])
+    : Map[Long, (String, Option[ActorRef], Int)] = {
     log.info("replicators {}", replicators)
     val replicationMsg = op match {
       case Insert(key, value, id) => Replicate(key, Some(value), id)
@@ -72,7 +75,8 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props)
       x ! replicationMsg
     }
     if (replicators.nonEmpty)
-      currentReplicationAcks + ((op.id, (op.key, sender, replicators.size)))
+      currentReplicationAcks + ((op.id,
+                                 (op.key, Some(sender), replicators.size)))
     else
       currentReplicationAcks
   }
@@ -99,7 +103,7 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props)
   def leader: Receive = {
     case Insert(key, value, id) =>
       log.info("upsert {} -> {}", key, value)
-      kv += (key -> value)
+      kv += ((key, (value, id)))
       log.debug("replicate insert {} on secondary nodes", id)
       val updatedReplicationAcks =
         replicate(Insert(key, value, id), replicators, replicationAcks)
@@ -136,8 +140,10 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props)
 
     case Get(key, id) =>
       log.info("get {}", key)
-      val valueOption = kv.get(key).orElse(None)
-      val operationReply = GetResult(key, valueOption, id)
+      val operationReply = kv get key match {
+        case Some((value, _)) => GetResult(key, Some(value), id)
+        case None             => GetResult(key, None, id)
+      }
       sender ! operationReply
 
     case Replicas(replicas) =>
@@ -158,11 +164,21 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props)
       } self ! Replicated(key, id)
       log.debug("update secondaries")
       val newReplicators = for (replica <- newReplicas) yield {
-        val replicator = context.actorOf(Replicator.props(replica)) //TODO add name
-        for (((key, value), id) <- kv.zipWithIndex)
-          //TODO check if is correct to generate ids in this way
-          replicate(Insert(key, value, id), replicators, replicationAcks)
-//          replicator ! Replicate(key, Some(value), id)
+        val replicator = context.actorOf(Replicator.props(replica))
+        val newReplicationAcks = for {
+          (key, (value, id)) <- kv
+        } yield {
+          val newValue = replicationAcks get id match {
+            case Some((key, requester, missingAcks)) =>
+              (id, (key, requester, missingAcks + 1))
+            case None =>
+              (id, (key, None, 1))
+          }
+          replicator ! Replicate(key, Some(value), id)
+          newValue
+        }
+        replicationAcks ++= newReplicationAcks
+        log.debug("updated replication acks {}", replicationAcks)
         replicator
       }
       replicators --= replicatorsToKill
@@ -172,14 +188,23 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props)
       log.info("updated secondaries {}", secondaries)
 
     case Replicated(_, id) if persistenceAcks get id isEmpty =>
-      val (key, requester, missingAcks) = replicationAcks(id)
-      missingAcks match {
-        case 1 =>
-          log.debug("complete request {}", id)
-          requester ! OperationAck(id)
-          replicationAcks -= id
-        case _ =>
-          replicationAcks += ((id, (key, requester, missingAcks - 1)))
+      replicationAcks(id) match {
+        case (key, Some(requester), missingAcks) =>
+          if (missingAcks == 1) {
+            log.debug("complete request {}", id)
+            requester ! OperationAck(id)
+            replicationAcks -= id
+          } else {
+            replicationAcks += ((id, (key, Some(requester), missingAcks - 1)))
+          }
+
+        case (key, None, missingAcks) =>
+          if (missingAcks == 1) {
+            log.debug("complete request {}", id)
+            replicationAcks -= id
+          } else {
+            replicationAcks += ((id, (key, None, missingAcks - 1)))
+          }
       }
 
     case Replicated(_, id) if persistenceAcks get id nonEmpty =>
@@ -220,8 +245,10 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props)
 
     case Get(key, id) =>
       log.info("get {}", key)
-      val valueOption = kv get key orElse None
-      val operationReply = GetResult(key, valueOption, id)
+      val operationReply = kv get key match {
+        case Some((value, _)) => GetResult(key, Some(value), id)
+        case None             => GetResult(key, None, id)
+      }
       sender ! operationReply
 
     case Snapshot(key, _, seq) if seq < expectedSeq =>
@@ -230,7 +257,7 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props)
 
     case Snapshot(key, Some(value), seq) if seq == expectedSeq =>
       log.debug("upsert {} -> {}", key, value)
-      kv += key -> value
+      kv += ((key, (value, seq)))
       log.debug("persist insert")
       persistence ! Persist(key, Some(value), seq)
       context.system.scheduler.scheduleOnce(100 milliseconds) {
