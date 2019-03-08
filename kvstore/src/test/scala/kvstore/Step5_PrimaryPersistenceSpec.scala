@@ -71,8 +71,8 @@ trait Step5_PrimaryPersistenceSpec
   test("Step5-case4: Primary generates failure after 1 second if global acknowledgement fails") {
     val arbiter = TestProbe()
     val persistence = TestProbe()
-        val primary = system.actorOf(Replica.props(arbiter.ref, Persistence.props(flaky = false)), "step5-case4-primary")
-        val secondary = TestProbe()
+    val primary = system.actorOf(Replica.props(arbiter.ref, Persistence.props(flaky = false)), "step5-case4-primary")
+    val secondary = TestProbe()
     val client = session(primary)
 
     arbiter.expectMsg(Join)
