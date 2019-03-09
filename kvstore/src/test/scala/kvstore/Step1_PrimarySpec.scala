@@ -14,7 +14,7 @@ trait Step1_PrimarySpec
 
   test("Step1-case1: Primary (in isolation) should properly register itself to the provided Arbiter") {
     val arbiter = TestProbe()
-        system.actorOf(Replica.props(arbiter.ref, Persistence.props(flaky = false)), "step1-case1-primary")
+    system.actorOf(Replica.props(arbiter.ref, Persistence.props(flaky = false)), "step1-case1-primary")
     
     arbiter.expectMsg(Join)
     ()

@@ -58,12 +58,19 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props)
 
   val firstSeqNum = 0
 
+  var _replicatorId = 0L
+  def nextReplicatorId(): Long = {
+    val ret = _replicatorId
+    _replicatorId += 1
+    ret
+  }
+
   def replicate(
       op: Operation,
       replicators: Set[ActorRef],
       currentReplicationAcks: Map[Long, (String, Option[ActorRef], Int)])
     : Map[Long, (String, Option[ActorRef], Int)] = {
-    log.info("replicators {}", replicators)
+//    log.info("replicators {}", replicators)
     val replicationMsg = op match {
       case Insert(key, value, id) => Replicate(key, Some(value), id)
       case Remove(key, id)        => Replicate(key, None, id)
@@ -72,11 +79,15 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props)
       log.info("replicate {} on {}", replicationMsg, x)
       x ! replicationMsg
     }
-    if (replicators.nonEmpty)
+    if (replicators.nonEmpty) {
+      /*context.system.scheduler.scheduleOnce(50 milliseconds) {
+        self ! ReplicateRetry(replicationMsg.key, replicationMsg.valueOption, replicationMsg.id)
+      }*/
       currentReplicationAcks + ((op.id,
                                  (op.key, Some(sender), replicators.size)))
-    else
+    } else {
       currentReplicationAcks
+    }
   }
 
   override val supervisorStrategy: OneForOneStrategy = OneForOneStrategy() {
@@ -86,10 +97,10 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props)
   }
 
   override def preStart(): Unit = {
-    log.debug("join the the replica set")
+    log.debug("join the replica set")
     arbiter ! Join
     log.debug("start persistence service")
-    persistence = context actorOf persistenceProps
+    persistence = context.actorOf(persistenceProps, "persistence")
   }
 
   def receive: PartialFunction[Any, Unit] = {
@@ -102,7 +113,7 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props)
     case Insert(key, value, id) =>
       log.info("upsert {}: {} -> {}", id, key, value)
       kv += ((key, (value, id)))
-      log.debug("replicate insert {} on secondary nodes", id)
+      log.debug("replicate upsert {} on {}", id, secondaries.keys)
       val updatedReplicationAcks =
         replicate(Insert(key, value, id), replicators, replicationAcks)
       replicationAcks = updatedReplicationAcks
@@ -113,7 +124,7 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props)
       }
       persistenceAcks += id -> sender
       val client = sender
-      context.system.scheduler.scheduleOnce(1000 milliseconds) {
+      context.system.scheduler.scheduleOnce(1 second) {
         log.info("check status of operation {}", id)
         self ! OperationStatus(id, client)
       }
@@ -146,44 +157,45 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props)
 
     case Replicas(replicas) =>
       val newReplicas = (replicas &~ secondaries.keySet) - self
-      log.debug("new replicas: {}", newReplicas)
+//      log.debug("new replicas: {}", newReplicas)
       val deadReplicas = secondaries.keySet &~ replicas
-      log.debug("dead replicas: {}", deadReplicas)
+//      log.debug("dead replicas: {}", deadReplicas)
       val replicatorsToKill = for {
         replica <- deadReplicas
         replicator <- secondaries.get(replica)
       } yield replicator
-      log.debug("kill replicators that belong to dead replicas: {}",
-                replicatorsToKill)
+//      log.debug("kill replicators that belong to dead replicas: {}", replicatorsToKill)
       replicatorsToKill foreach context.stop //TODO is it better to kill the replicator with a poison pill?
       for {
         (id, (key, _, _)) <- replicationAcks
         _ <- replicatorsToKill
       } self ! Replicated(key, id)
-      log.debug("update secondaries")
       val newReplicators = for (replica <- newReplicas) yield {
-        val replicator = context.actorOf(Replicator.props(replica))
-        val newReplicationAcks = for {
-          (key, (value, id)) <- kv
-        } yield {
+        val replicator = context.actorOf(Replicator.props(replica),
+                                         "replicator-" + nextReplicatorId())
+        val newReplicationAcks = for ((key, (value, id)) <- kv) yield {
           val newValue = replicationAcks get id match {
-            case Some((key, requester, missingAcks)) =>
+            case Some((_, requester, missingAcks)) =>
               (id, (key, requester, missingAcks + 1))
-            case None =>
+            case None if persistenceAcks get id nonEmpty =>
+              (id, (key, Some(persistenceAcks(id)), 1))
+            case None if persistenceAcks get id isEmpty =>
               (id, (key, None, 1))
           }
           replicator ! Replicate(key, Some(value), id)
+          //TODO add retries
           newValue
         }
         replicationAcks ++= newReplicationAcks
-        log.debug("updated replication acks {}", replicationAcks)
+//        log.debug("updated replication acks {}", replicationAcks)
         replicator
       }
       replicators --= replicatorsToKill
       replicators ++= newReplicators
       secondaries --= deadReplicas
       secondaries ++= newReplicas zip newReplicators
-      log.info("updated secondaries {}", secondaries)
+//      log.info("updated secondaries {}", secondaries)
+      log.debug("replication acks after replicas message: {}", replicationAcks)
 
     case Replicated(_, id) if persistenceAcks get id isEmpty =>
       replicationAcks(id) match {
@@ -200,23 +212,30 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props)
       }
 
     case Replicated(_, id) if persistenceAcks get id nonEmpty =>
-      val (key, requester, missingAcks) = replicationAcks(id)
-      replicationAcks += ((id, (key, requester, missingAcks - 1)))
+      replicationAcks(id) match {
+        case (_, _, 1) => replicationAcks -= id
+        case (key, requester, missingAcks) =>
+          replicationAcks += ((id, (key, requester, missingAcks - 1)))
+      }
+      log.debug("operation {} replicated, replication acks: {}",
+                replicationAcks)
 
     case PersistRetry(key, valueOption, id)
         if persistenceAcks get id nonEmpty =>
       log.debug("retry to persist operation {}", id)
       persistence ! Persist(key, valueOption, id)
-      context.system.scheduler.scheduleOnce(50 milliseconds) {
+      context.system.scheduler.scheduleOnce(100 milliseconds) {
         self ! PersistRetry(key, valueOption, id)
       }
 
     case Persisted(_, id) if replicationAcks get id isEmpty =>
+//      log.info("operation {} persisted and all replication acks received", id)
+      log.debug("complete request {}", id)
       persistenceAcks(id) ! OperationAck(id)
       persistenceAcks -= id
 
     case Persisted(_, id) if replicationAcks get id nonEmpty =>
-      log.info("missing acks {}", replicationAcks)
+      log.info("persisted operation {}", id)
       persistenceAcks -= id
 
     case OperationStatus(id, client)
@@ -248,11 +267,10 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props)
       sender ! SnapshotAck(key, seq)
 
     case Snapshot(key, Some(value), seq) if seq == expectedSeq =>
-      log.debug("upsert {} -> {}", key, value)
       kv += ((key, (value, seq)))
-      log.debug("persist insert")
+      log.debug("persist insert {}", seq)
       persistence ! Persist(key, Some(value), seq)
-      context.system.scheduler.scheduleOnce(50 milliseconds) {
+      context.system.scheduler.scheduleOnce(100 milliseconds) {
         self ! PersistRetry(key, Some(value), seq)
       }
       persistenceAcks += seq -> sender
@@ -262,7 +280,7 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props)
       kv -= key
       log.debug("persist remove")
       persistence ! Persist(key, None, seq)
-      context.system.scheduler.scheduleOnce(50 milliseconds) {
+      context.system.scheduler.scheduleOnce(100 milliseconds) {
         self ! PersistRetry(key, None, seq)
       }
       persistenceAcks += seq -> sender

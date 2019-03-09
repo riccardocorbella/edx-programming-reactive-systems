@@ -3,7 +3,6 @@ package kvstore
 import akka.actor.{Actor, ActorLogging, ActorRef, Props}
 
 import scala.concurrent.duration._
-
 import scala.language.postfixOps
 
 object Replicator {
@@ -19,7 +18,6 @@ object Replicator {
 
 class Replicator(val replica: ActorRef) extends Actor with ActorLogging {
   import Replicator._
-  import Replica._
   import context.dispatcher
 
   /*
@@ -56,10 +54,10 @@ class Replicator(val replica: ActorRef) extends Actor with ActorLogging {
       }
 
     case SnapshotAck(_, seq) if acks get seq nonEmpty =>
-      for ((sender, replicate) <- acks get seq) {
-        log.debug("ack for seq {}, forward it to {}", seq, sender)
-        sender ! Replicated(replicate.key, replicate.id)
+      for ((primary, Replicate(key, _, id)) <- acks get seq) {
         acks -= seq
+        log.debug("operation {} acknowledged, send {} to {}", seq, Replicated(key, id), primary)
+        primary ! Replicated(key, id)
       }
   }
 }
