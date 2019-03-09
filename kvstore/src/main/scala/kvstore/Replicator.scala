@@ -8,7 +8,7 @@ import scala.language.postfixOps
 
 object Replicator {
   case class Replicate(key: String, valueOption: Option[String], id: Long)
-  case class RetryReplicate(key: String, valueOption: Option[String], seq: Long)
+  case class ReplicateRetry(key: String, valueOption: Option[String], seq: Long)
   case class Replicated(key: String, id: Long)
 
   case class Snapshot(key: String, valueOption: Option[String], seq: Long)
@@ -44,15 +44,15 @@ class Replicator(val replica: ActorRef) extends Actor with ActorLogging {
       log.info("replicate key {} on {} with seq {}", key, replica, seq)
       replica ! Snapshot(key, valueOption, seq)
       acks += ((seq, (sender, Replicate(key, valueOption, id))))
-      context.system.scheduler.scheduleOnce(100 milliseconds) {
-        self ! RetryReplicate(key, valueOption, seq)
+      context.system.scheduler.scheduleOnce(50 milliseconds) {
+        self ! ReplicateRetry(key, valueOption, seq)
       }
 
-    case RetryReplicate(key, valueOption, seq) if acks get seq nonEmpty =>
+    case ReplicateRetry(key, valueOption, seq) if acks get seq nonEmpty =>
       log.debug("re-send snapshot request with seq {}", seq)
       replica ! Snapshot(key, valueOption, seq)
-      context.system.scheduler.scheduleOnce(100 milliseconds) {
-        self ! RetryReplicate(key, valueOption, seq)
+      context.system.scheduler.scheduleOnce(50 milliseconds) {
+        self ! ReplicateRetry(key, valueOption, seq)
       }
 
     case SnapshotAck(_, seq) if acks get seq nonEmpty =>

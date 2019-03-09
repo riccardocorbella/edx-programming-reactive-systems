@@ -1,12 +1,10 @@
 package kvstore
 
+import akka.actor.SupervisorStrategy.{Escalate, Restart}
 import akka.actor.{Actor, ActorLogging, ActorRef, OneForOneStrategy, Props}
 import kvstore.Arbiter._
 
-import akka.actor.SupervisorStrategy.{Escalate, Restart}
-
 import scala.concurrent.duration._
-
 import scala.language.postfixOps
 
 object Replica {
@@ -33,9 +31,9 @@ object Replica {
 class Replica(val arbiter: ActorRef, persistenceProps: Props)
     extends Actor
     with ActorLogging {
+  import Persistence._
   import Replica._
   import Replicator._
-  import Persistence._
   import context.dispatcher
 
   /*
@@ -102,7 +100,7 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props)
   /* Behavior for the leader role. */
   def leader: Receive = {
     case Insert(key, value, id) =>
-      log.info("upsert {} -> {}", key, value)
+      log.info("upsert {}: {} -> {}", id, key, value)
       kv += ((key, (value, id)))
       log.debug("replicate insert {} on secondary nodes", id)
       val updatedReplicationAcks =
@@ -115,13 +113,13 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props)
       }
       persistenceAcks += id -> sender
       val client = sender
-      context.system.scheduler.scheduleOnce(1 second) {
+      context.system.scheduler.scheduleOnce(1000 milliseconds) {
         log.info("check status of operation {}", id)
         self ! OperationStatus(id, client)
       }
 
     case Remove(key, id) =>
-      log.info("remove {}", key)
+      log.info("remove {}: {}", id, key)
       kv -= key
       log.debug("replicate remove {} on secondary nodes", id)
       val updatedReplicationAcks =
@@ -189,22 +187,16 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props)
 
     case Replicated(_, id) if persistenceAcks get id isEmpty =>
       replicationAcks(id) match {
+        case (_, Some(requester), 1) =>
+          log.debug("complete request {}", id)
+          requester ! OperationAck(id)
+          replicationAcks -= id
         case (key, Some(requester), missingAcks) =>
-          if (missingAcks == 1) {
-            log.debug("complete request {}", id)
-            requester ! OperationAck(id)
-            replicationAcks -= id
-          } else {
-            replicationAcks += ((id, (key, Some(requester), missingAcks - 1)))
-          }
-
+          replicationAcks += ((id, (key, Some(requester), missingAcks - 1)))
+        case (_, None, 1) =>
+          replicationAcks -= id
         case (key, None, missingAcks) =>
-          if (missingAcks == 1) {
-            log.debug("complete request {}", id)
-            replicationAcks -= id
-          } else {
-            replicationAcks += ((id, (key, None, missingAcks - 1)))
-          }
+          replicationAcks += ((id, (key, None, missingAcks - 1)))
       }
 
     case Replicated(_, id) if persistenceAcks get id nonEmpty =>
@@ -215,7 +207,7 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props)
         if persistenceAcks get id nonEmpty =>
       log.debug("retry to persist operation {}", id)
       persistence ! Persist(key, valueOption, id)
-      context.system.scheduler.scheduleOnce(100 milliseconds) {
+      context.system.scheduler.scheduleOnce(50 milliseconds) {
         self ! PersistRetry(key, valueOption, id)
       }
 
@@ -260,7 +252,7 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props)
       kv += ((key, (value, seq)))
       log.debug("persist insert")
       persistence ! Persist(key, Some(value), seq)
-      context.system.scheduler.scheduleOnce(100 milliseconds) {
+      context.system.scheduler.scheduleOnce(50 milliseconds) {
         self ! PersistRetry(key, Some(value), seq)
       }
       persistenceAcks += seq -> sender
@@ -270,7 +262,7 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props)
       kv -= key
       log.debug("persist remove")
       persistence ! Persist(key, None, seq)
-      context.system.scheduler.scheduleOnce(100 milliseconds) {
+      context.system.scheduler.scheduleOnce(50 milliseconds) {
         self ! PersistRetry(key, None, seq)
       }
       persistenceAcks += seq -> sender
