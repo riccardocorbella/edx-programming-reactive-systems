@@ -10,26 +10,26 @@ import org.scalatest.prop.PropertyChecks
 
 trait SelectiveReceiveSpec extends FunSuite with PropertyChecks with MustMatchers {
 
-    def behavior[T](inbox: TestInbox[T], size: Int, seq: List[T]) =
-        SelectiveReceive(size, expectOne(inbox, seq))
+  def behavior[T](inbox: TestInbox[T], size: Int, seq: List[T]) =
+    SelectiveReceive(size, expectOne(inbox, seq))
 
-    def expectOne[T](inbox: TestInbox[T], seq: List[T]): Behavior[T] =
-        seq match {
-            case x :: xs =>
-                receiveMessagePartial {
-                    case `x` =>
-                        inbox.ref ! x
-                        expectOne(inbox, xs)
-                }
-            case Nil => Behaviors.ignore
-        }
-    
-    def expectStart[T](inbox: TestInbox[T], start: T, followUp: Behavior[T]): Behavior[T] =
+  def expectOne[T](inbox: TestInbox[T], seq: List[T]): Behavior[T] =
+    seq match {
+      case x :: xs =>
         receiveMessagePartial {
-            case x @ `start` =>
-                inbox.ref ! x
-                followUp
+          case `x` =>
+            inbox.ref ! x
+            expectOne(inbox, xs)
         }
+      case Nil => Behaviors.ignore
+    }
+
+  def expectStart[T](inbox: TestInbox[T], start: T, followUp: Behavior[T]): Behavior[T] =
+    receiveMessagePartial {
+      case x @ `start` =>
+        inbox.ref ! x
+        followUp
+    }
 
   test("A SelectiveReceive Decorator must eventually execute the behavior") {
     val values = List("A", "B", "C")
