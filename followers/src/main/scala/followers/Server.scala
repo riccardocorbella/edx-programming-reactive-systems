@@ -73,7 +73,29 @@ object Server {
     * operation around in the operator.
     */
   val reintroduceOrdering: Flow[Event, Event, NotUsed] =
-    unimplementedFlow
+    Flow[Event] statefulMapConcat { () =>
+      var buffer = List.empty[Event]
+      var expectedSequenceNr: Option[Int] = None
+
+      {
+        case x if x.sequenceNr == expectedSequenceNr.getOrElse(1) && buffer.isEmpty =>
+          expectedSequenceNr = expectedSequenceNr.map(_ + 1).orElse(Some(2))
+          List(x)
+        case x if x.sequenceNr == expectedSequenceNr.getOrElse(1) && buffer.nonEmpty =>
+          val identity = (List.empty[Event], List.empty[Event])
+          val (resultDesc, updatedBufferDesc) = (x :: buffer).sortBy(_.sequenceNr).foldLeft(identity) {
+            case ((Nil, Nil), z) => (z :: Nil, Nil)
+            case ((xs, ys), z) if xs.head.sequenceNr + 1 == z.sequenceNr => (z :: xs, ys)
+            case ((xs, ys), z) => (xs, z :: ys)
+          }
+          expectedSequenceNr = Some(resultDesc.head.sequenceNr + 1)
+          buffer = updatedBufferDesc.reverse
+          resultDesc.reverse
+        case x =>
+          buffer = x :: buffer
+          Nil
+      }
+    }
 
   /**
     * A flow that associates a state of [[Followers]] to
