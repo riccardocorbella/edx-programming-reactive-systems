@@ -5,6 +5,7 @@ import akka.event.Logging
 import akka.stream.scaladsl.{BroadcastHub, Flow, Framing, Keep, MergeHub, Sink, Source}
 import akka.stream.{ActorAttributes, Materializer}
 import akka.util.ByteString
+import followers.model.Event.{Follow, Unfollow}
 import followers.model.{Event, Followers, Identity}
 
 import scala.collection.SortedSet
@@ -75,20 +76,20 @@ object Server {
   val reintroduceOrdering: Flow[Event, Event, NotUsed] =
     Flow[Event] statefulMapConcat { () =>
       var buffer = List.empty[Event]
-      var expectedSequenceNr: Option[Int] = None
+      var nextSequenceNr: Option[Int] = None
 
       {
-        case x if x.sequenceNr == expectedSequenceNr.getOrElse(1) && buffer.isEmpty =>
-          expectedSequenceNr = expectedSequenceNr.map(_ + 1).orElse(Some(2))
+        case x if x.sequenceNr == nextSequenceNr.getOrElse(1) && buffer.isEmpty =>
+          nextSequenceNr = nextSequenceNr.map(_ + 1).orElse(Some(2))
           List(x)
-        case x if x.sequenceNr == expectedSequenceNr.getOrElse(1) && buffer.nonEmpty =>
+        case x if x.sequenceNr == nextSequenceNr.getOrElse(1) && buffer.nonEmpty =>
           val identity = (List.empty[Event], List.empty[Event])
           val (resultDesc, updatedBufferDesc) = (x :: buffer).sortBy(_.sequenceNr).foldLeft(identity) {
             case ((Nil, Nil), z) => (z :: Nil, Nil)
             case ((xs, ys), z) if xs.head.sequenceNr + 1 == z.sequenceNr => (z :: xs, ys)
             case ((xs, ys), z) => (xs, z :: ys)
           }
-          expectedSequenceNr = Some(resultDesc.head.sequenceNr + 1)
+          nextSequenceNr = Some(resultDesc.head.sequenceNr + 1)
           buffer = updatedBufferDesc.reverse
           resultDesc.reverse
         case x =>
@@ -106,7 +107,20 @@ object Server {
     *  - you may find the `statefulMapConcat` operation useful.
     */
   val followersFlow: Flow[Event, (Event, Followers), NotUsed] =
-    unimplementedFlow
+    Flow[Event] statefulMapConcat { () =>
+      var followers = Map.empty[Int, Set[Int]]
+
+      {
+        case x @ Follow(_, fromUserId, toUserId) =>
+          followers += fromUserId -> (followers.getOrElse(fromUserId, Set.empty[Int]) + toUserId)
+          List((x, followers))
+        case x @ Unfollow(_, fromUserId, toUserId) =>
+          followers += fromUserId -> followers.get(fromUserId).map(_ - toUserId).orElse(Some(Set.empty[Int])).get
+          List((x, followers))
+        case x =>
+          List((x, followers))
+      }
+    }
 
   /**
     * @return Whether the given user should be notified by the incoming `Event`,
